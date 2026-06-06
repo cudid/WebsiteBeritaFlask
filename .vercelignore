@@ -1,0 +1,8 @@
+__pycache__
+*.pyc
+.env
+.venv
+venv
+.git
+preprosesing_querytes_fix.py
+data/hasil_scraping_kompas.xlsx

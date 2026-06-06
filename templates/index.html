@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mesin Pencari Berita Kompas</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="bg-pattern"></div>
+
+    <header class="header">
+        <div class="container">
+            <div class="logo">
+                <span class="logo-icon">📰</span>
+                <div>
+                    <h1>Mesin Pencari Berita</h1>
+                    <p class="subtitle">Information Retrieval — TF-IDF & Cosine Similarity</p>
+                </div>
+            </div>
+            {% if data_ready %}
+            <div class="badge badge-success">{{ total_articles }} artikel terindeks</div>
+            {% else %}
+            <div class="badge badge-warning">Data belum tersedia</div>
+            {% endif %}
+        </div>
+    </header>
+
+    <main class="container">
+        {% if not data_ready %}
+        <section class="alert alert-warning">
+            <strong>Data belum ditemukan.</strong>
+            Letakkan file <code>hasil_scraping_kompas.xlsx</code> di folder <code>data/</code>,
+            lalu jalankan <code>python prepare_cache.py</code> sebelum deploy.
+        </section>
+        {% endif %}
+
+        <section class="search-section">
+            <form id="searchForm" class="search-form">
+                <div class="search-input-wrap">
+                    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"></circle>
+                        <path d="m21 21-4.35-4.35"></path>
+                    </svg>
+                    <input
+                        type="text"
+                        id="queryInput"
+                        placeholder="Ketik kata kunci pencarian... (contoh: politik, ekonomi, sepak bola)"
+                        autocomplete="off"
+                        {% if not data_ready %}disabled{% endif %}
+                    >
+                </div>
+                <div class="search-controls">
+                    <label class="top-n-label">
+                        Jumlah hasil:
+                        <select id="topN">
+                            <option value="5">5</option>
+                            <option value="10" selected>10</option>
+                            <option value="20">20</option>
+                            <option value="50">50</option>
+                        </select>
+                    </label>
+                    <button type="submit" id="searchBtn" {% if not data_ready %}disabled{% endif %}>
+                        <span class="btn-text">Cari</span>
+                        <span class="btn-loader hidden"></span>
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <section id="statusArea" class="status-area hidden"></section>
+        <section id="resultsArea" class="results-area"></section>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>Preprocessing: Sastrawi (Stemming & Stopword) · Ranking: TF-IDF + Cosine Similarity</p>
+        </div>
+    </footer>
+
+    <script>
+        const form = document.getElementById('searchForm');
+        const queryInput = document.getElementById('queryInput');
+        const topN = document.getElementById('topN');
+        const searchBtn = document.getElementById('searchBtn');
+        const statusArea = document.getElementById('statusArea');
+        const resultsArea = document.getElementById('resultsArea');
+
+        function setLoading(loading) {
+            searchBtn.disabled = loading;
+            searchBtn.querySelector('.btn-text').classList.toggle('hidden', loading);
+            searchBtn.querySelector('.btn-loader').classList.toggle('hidden', !loading);
+        }
+
+        function showStatus(message, type = 'info') {
+            statusArea.className = `status-area status-${type}`;
+            statusArea.textContent = message;
+            statusArea.classList.remove('hidden');
+        }
+
+        function truncate(text, max = 280) {
+            if (!text) return '';
+            return text.length > max ? text.slice(0, max) + '…' : text;
+        }
+
+        function renderResults(data) {
+            if (!data.results || data.results.length === 0) {
+                resultsArea.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🔍</div>
+                        <h3>Tidak ada hasil ditemukan</h3>
+                        <p>Coba gunakan kata kunci yang berbeda.</p>
+                    </div>`;
+                return;
+            }
+
+            const cards = data.results.map((item, idx) => `
+                <article class="result-card">
+                    <div class="result-header">
+                        <span class="result-rank">#${idx + 1}</span>
+                        <span class="result-score">Skor: ${item.score}</span>
+                    </div>
+                    <h3 class="result-title">${item.judul}</h3>
+                    <div class="result-meta">
+                        <span class="meta-item">🕐 ${item.waktu}</span>
+                        ${item.url ? `<a href="${item.url}" target="_blank" rel="noopener" class="meta-link">Baca di Kompas →</a>` : ''}
+                    </div>
+                    <p class="result-content">${truncate(item.konten)}</p>
+                </article>
+            `).join('');
+
+            resultsArea.innerHTML = `
+                <div class="results-header">
+                    <h2>Hasil Pencarian</h2>
+                    <p>Menampilkan <strong>${data.total}</strong> artikel relevan untuk "<em>${data.query}</em>"</p>
+                </div>
+                <div class="results-grid">${cards}</div>`;
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = queryInput.value.trim();
+            if (!query) {
+                showStatus('Masukkan kata kunci pencarian terlebih dahulu.', 'warning');
+                return;
+            }
+
+            setLoading(true);
+            statusArea.classList.add('hidden');
+            resultsArea.innerHTML = '';
+
+            try {
+                const res = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query, top_n: parseInt(topN.value) })
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showStatus(data.error || 'Terjadi kesalahan.', 'error');
+                    return;
+                }
+
+                showStatus(`Mencari berita relevan dengan: "${data.query}"`, 'info');
+                renderResults(data);
+            } catch (err) {
+                showStatus('Gagal terhubung ke server. Coba lagi.', 'error');
+            } finally {
+                setLoading(false);
+            }
+        });
+    </script>
+</body>
+</html>
